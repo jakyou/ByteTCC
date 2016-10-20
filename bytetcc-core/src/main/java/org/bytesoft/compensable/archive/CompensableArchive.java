@@ -25,14 +25,15 @@ public class CompensableArchive {
 	private CompensableInvocation compensable;
 
 	/* try-phase. */
+	private String transactionResourceKey;
 	private Xid transactionXid;
-	private boolean participantTried;
+	private boolean tried;
 
 	/* confirm/cancel phase. */
+	private String compensableResourceKey;
 	private Xid compensableXid;
 	private boolean confirmed;
 	private boolean cancelled;
-	private boolean txMixed;
 	private boolean coordinator;
 
 	public int hashCode() {
@@ -78,12 +79,12 @@ public class CompensableArchive {
 		this.compensable = compensable;
 	}
 
-	public boolean isParticipantTried() {
-		return participantTried;
+	public boolean isTried() {
+		return tried;
 	}
 
-	public void setParticipantTried(boolean participantTried) {
-		this.participantTried = participantTried;
+	public void setTried(boolean tried) {
+		this.tried = tried;
 	}
 
 	public boolean isConfirmed() {
@@ -110,12 +111,20 @@ public class CompensableArchive {
 		this.coordinator = coordinator;
 	}
 
-	public boolean isTxMixed() {
-		return txMixed;
+	public String getTransactionResourceKey() {
+		return transactionResourceKey;
 	}
 
-	public void setTxMixed(boolean txMixed) {
-		this.txMixed = txMixed;
+	public void setTransactionResourceKey(String transactionResourceKey) {
+		this.transactionResourceKey = transactionResourceKey;
+	}
+
+	public String getCompensableResourceKey() {
+		return compensableResourceKey;
+	}
+
+	public void setCompensableResourceKey(String compensableResourceKey) {
+		this.compensableResourceKey = compensableResourceKey;
 	}
 
 }

@@ -13,22 +13,38 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.compensable;
+package org.bytesoft.bytetcc.supports.zk;
 
 import org.bytesoft.compensable.archive.CompensableArchive;
 import org.bytesoft.compensable.archive.TransactionArchive;
-import org.bytesoft.transaction.Transaction;
-import org.bytesoft.transaction.supports.TransactionListener;
-import org.bytesoft.transaction.supports.TransactionResourceListener;
+import org.bytesoft.compensable.logging.CompensableLogger;
+import org.bytesoft.transaction.archive.XAResourceArchive;
+import org.bytesoft.transaction.recovery.TransactionRecoveryCallback;
 
-public interface CompensableTransaction extends Transaction, TransactionListener, TransactionResourceListener {
+public class TransactionLoggerImpl implements CompensableLogger {
 
-	public Transaction getTransaction();
+	public void createTransaction(TransactionArchive archive) {
+	}
 
-	public CompensableArchive getCompensableArchive();
+	public void updateTransaction(TransactionArchive archive) {
+	}
 
-	public TransactionArchive getTransactionArchive();
+	public void deleteTransaction(TransactionArchive archive) {
+	}
 
-	public void registerCompensable(CompensableInvocation invocation);
+	public void createCoordinator(XAResourceArchive archive) {
+	}
+
+	public void updateCoordinator(XAResourceArchive archive) {
+	}
+
+	public void createCompensable(CompensableArchive archive) {
+	}
+
+	public void updateCompensable(CompensableArchive archive) {
+	}
+
+	public void recover(TransactionRecoveryCallback callback) {
+	}
 
 }

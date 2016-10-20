@@ -76,8 +76,8 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 		return (CompensableTransaction) this.compensableMap.get(Thread.currentThread());
 	}
 
-	public void resume(javax.transaction.Transaction tobj)
-			throws InvalidTransactionException, IllegalStateException, SystemException {
+	public void resume(javax.transaction.Transaction tobj) throws InvalidTransactionException, IllegalStateException,
+			SystemException {
 		CompensableTransaction transaction = (CompensableTransaction) this.compensableMap.get(Thread.currentThread());
 		if (transaction == null || transaction.getTransaction() != null) {
 			throw new IllegalStateException();
@@ -126,6 +126,8 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 			transactionContext.setXid(tccTransactionXid);
 			transaction = new CompensableTransactionImpl(transactionContext);
 			transaction.setBeanFactory(this.beanFactory);
+
+			// compensableLogger.createTransaction(transaction.getTransactionArchive()); // lazy.
 		}
 
 		TransactionContext jtaTransactionContext = new TransactionContext();
@@ -138,6 +140,7 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 			jtaTransaction.setTransactionalExtra(transaction);
 			transaction.setTransactionalExtra(jtaTransaction);
 
+			jtaTransaction.registerTransactionResourceListener(transaction);
 			jtaTransaction.registerTransactionListener(transaction);
 		} catch (TransactionException tex) {
 			logger.info("[{}] begin-transaction: error occurred while starting jta-transaction: {}",
@@ -181,6 +184,7 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 			jtaTransaction.setTransactionalExtra(transaction);
 			transaction.setTransactionalExtra(jtaTransaction);
 
+			jtaTransaction.registerTransactionResourceListener(transaction);
 			jtaTransaction.registerTransactionListener(transaction);
 		} catch (TransactionException tex) {
 			transaction.setTransactionalExtra(null);
@@ -221,9 +225,9 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 		}
 	}
 
-	protected void invokeTransactionCommit(CompensableTransaction transaction)
-			throws RollbackException, HeuristicMixedException, HeuristicRollbackException, SecurityException,
-			IllegalStateException, SystemException {
+	protected void invokeTransactionCommit(CompensableTransaction transaction) throws RollbackException,
+			HeuristicMixedException, HeuristicRollbackException, SecurityException, IllegalStateException,
+			SystemException {
 
 		Transaction jtaTransaction = transaction.getTransaction();
 		boolean isLocalTransaction = jtaTransaction.isLocalTransaction();
@@ -288,14 +292,12 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 		}
 	}
 
-	public void fireCompensableCommit(CompensableTransaction transaction)
-			throws RollbackException, HeuristicMixedException, HeuristicRollbackException, SecurityException,
-			IllegalStateException, SystemException {
-		TransactionContext transactionContext = transaction.getTransactionContext();
+	public void fireCompensableCommit(CompensableTransaction transaction) throws RollbackException,
+			HeuristicMixedException, HeuristicRollbackException, SecurityException, IllegalStateException,
+			SystemException {
 		try {
 			this.associateThread(transaction);
 
-			transactionContext.setCompensating(true);
 			transaction.commit();
 		} finally {
 			this.desociateThread();
@@ -322,8 +324,8 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 
 	}
 
-	protected void invokeTransactionRollback(CompensableTransaction transaction)
-			throws IllegalStateException, SecurityException, SystemException {
+	protected void invokeTransactionRollback(CompensableTransaction transaction) throws IllegalStateException,
+			SecurityException, SystemException {
 
 		Transaction jtaTransaction = transaction.getTransaction();
 		TransactionContext jtaTransactionContext = jtaTransaction.getTransactionContext();
@@ -337,13 +339,11 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 		}
 	}
 
-	public void fireCompensableRollback(CompensableTransaction transaction)
-			throws IllegalStateException, SecurityException, SystemException {
-		TransactionContext transactionContext = transaction.getTransactionContext();
+	public void fireCompensableRollback(CompensableTransaction transaction) throws IllegalStateException,
+			SecurityException, SystemException {
 		try {
 			this.associateThread(transaction);
 
-			transactionContext.setCompensating(true);
 			transaction.rollback();
 		} finally {
 			this.desociateThread();
@@ -376,9 +376,9 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 		this.invokeCompensableCommit(transaction);
 	}
 
-	protected void invokeCompensableCommit(CompensableTransaction transaction)
-			throws RollbackException, HeuristicMixedException, HeuristicRollbackException, SecurityException,
-			IllegalStateException, SystemException {
+	protected void invokeCompensableCommit(CompensableTransaction transaction) throws RollbackException,
+			HeuristicMixedException, HeuristicRollbackException, SecurityException, IllegalStateException,
+			SystemException {
 
 		TransactionRepository compensableRepository = this.beanFactory.getCompensableRepository();
 		Transaction jtaTransaction = transaction.getTransaction();
@@ -390,7 +390,7 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 
 		boolean isLocalTransaction = jtaTransaction.isLocalTransaction();
 		try {
-			if (isLocalTransaction) /* jta-transaction in try-phase cannot be xa transaction. */ {
+			if (isLocalTransaction) /* jta-transaction in try-phase cannot be xa transaction. */{
 				this.invokeCompensableCommitIfLocalTransaction(transaction);
 				commitExists = true;
 			} else {
@@ -496,8 +496,8 @@ public class CompensableManagerImpl implements CompensableManager, CompensableBe
 		this.invokeCompensableRollback(transaction);
 	}
 
-	protected void invokeCompensableRollback(CompensableTransaction transaction)
-			throws IllegalStateException, SecurityException, SystemException {
+	protected void invokeCompensableRollback(CompensableTransaction transaction) throws IllegalStateException,
+			SecurityException, SystemException {
 
 		TransactionRepository compensableRepository = this.beanFactory.getCompensableRepository();
 		RemoteCoordinator jtaTransactionCoordinator = this.beanFactory.getTransactionCoordinator();
