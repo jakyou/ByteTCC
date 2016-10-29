@@ -21,7 +21,12 @@ import java.util.Map;
 
 import javax.transaction.Status;
 import javax.transaction.SystemException;
+import javax.transaction.xa.XAException;
+import javax.transaction.xa.XAResource;
+import javax.transaction.xa.Xid;
 
+import org.apache.commons.lang3.StringUtils;
+import org.bytesoft.bytejta.supports.jdbc.RecoveredResource;
 import org.bytesoft.common.utils.ByteUtils;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.CompensableManager;
@@ -38,14 +43,15 @@ import org.bytesoft.transaction.archive.TransactionArchive;
 import org.bytesoft.transaction.archive.XAResourceArchive;
 import org.bytesoft.transaction.recovery.TransactionRecoveryCallback;
 import org.bytesoft.transaction.recovery.TransactionRecoveryListener;
+import org.bytesoft.transaction.supports.serialize.XAResourceDeserializer;
 import org.bytesoft.transaction.xa.TransactionXid;
 import org.bytesoft.transaction.xa.XidFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TransactionRecoveryImpl
-		implements TransactionRecovery, TransactionRecoveryListener, CompensableBeanFactoryAware {
-	static final Logger logger = LoggerFactory.getLogger(TransactionRecoveryImpl.class.getSimpleName());
+public class TransactionRecoveryImpl implements TransactionRecovery, TransactionRecoveryListener,
+		CompensableBeanFactoryAware {
+	static final Logger logger = LoggerFactory.getLogger(TransactionRecoveryImpl.class);
 
 	private CompensableBeanFactory beanFactory;
 
@@ -82,31 +88,19 @@ public class TransactionRecoveryImpl
 
 			public void recover(org.bytesoft.compensable.archive.TransactionArchive archive) {
 				XidFactory transactionXidFactory = beanFactory.getTransactionXidFactory();
-				// XidFactory compensableXidFactory = beanFactory.getCompensableXidFactory();
 
 				CompensableTransactionImpl transaction = reconstructTransaction(archive);
 				TransactionContext transactionContext = transaction.getTransactionContext();
 				if (transactionContext.isCompensable()) {
+					correctStatusIfNecessary(transaction);
+
 					TransactionXid compensableXid = transactionContext.getXid();
-					// List<CompensableArchive> compensableArchiveList = archive.getCompensableResourceList();
-					// for (int i = 0; i < compensableArchiveList.size(); i++) {
-					// CompensableArchive compensableArchive = compensableArchiveList.get(i);
-					// Xid transactionXid = compensableArchive.getCompensableXid();
-					// TransactionXid compensableXid = xidFactory.createGlobalXid(transactionXid.getBranchQualifier());
-					//
-					// Transaction tx = recovered.get(compensableXid);
-					// if (tx != null) {
-					// tx.setTransactionalExtra(transaction);
-					// transaction.setTransactionalExtra(tx);
-					// }
-					//
-					// }
 					transactionRepository.putTransaction(compensableXid, transaction);
 					transactionRepository.putErrorTransaction(compensableXid, transaction);
 				} else {
 					TransactionXid compensableXid = transactionContext.getXid();
-					TransactionXid transactionXid = transactionXidFactory
-							.createGlobalXid(compensableXid.getGlobalTransactionId());
+					TransactionXid transactionXid = transactionXidFactory.createGlobalXid(compensableXid
+							.getGlobalTransactionId());
 					Transaction tx = recovered.get(transactionXid);
 					if (tx != null) {
 						tx.setTransactionalExtra(transaction);
@@ -149,8 +143,91 @@ public class TransactionRecoveryImpl
 			transaction.getCompensableArchiveList().add(compensableArchive);
 		}
 
-		// TODO
 		return transaction;
+	}
+
+	private void correctStatusIfNecessary(Transaction transaction) {
+		switch (transaction.getTransactionStatus()) {
+		case Status.STATUS_ACTIVE:
+		case Status.STATUS_MARKED_ROLLBACK:
+		case Status.STATUS_PREPARING:
+		case Status.STATUS_UNKNOWN:
+			this.recoverStatusIfNecessary(transaction);
+			break;
+		default:
+			// ignore
+		}
+	}
+
+	private void recoverStatusIfNecessary(Transaction transaction) {
+		CompensableTransactionImpl compensable = (CompensableTransactionImpl) transaction;
+		List<CompensableArchive> archiveList = compensable.getCompensableArchiveList();
+
+		CompensableArchive compensableArchive = null;
+		boolean tried = false;
+		for (int i = archiveList.size() - 1; i >= 0; i--) {
+			CompensableArchive current = archiveList.get(i);
+			if (current.isTried()) {
+				tried = true;
+				break;
+			}
+			compensableArchive = current;
+		}
+
+		XAResourceDeserializer resourceDeserializer = this.beanFactory.getResourceDeserializer();
+		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
+		if (tried == false) {
+			if (StringUtils.isBlank(compensableArchive.getTransactionResourceKey())) {
+				logger.warn("There is no valid resource participated in the trying branch transaction, the status of the branch transaction is unknown!");
+			} else {
+				XAResource xares = resourceDeserializer.deserialize(compensableArchive.getTransactionResourceKey());
+				if (RecoveredResource.class.isInstance(xares)) {
+					RecoveredResource resource = (RecoveredResource) xares;
+					try {
+						resource.recoverable(compensableArchive.getTransactionXid());
+						compensableArchive.setTried(true);
+						transaction.setTransactionStatus(Status.STATUS_COMMITTING); // TODO
+						compensableLogger.updateTransaction(compensable.getTransactionArchive());
+					} catch (XAException xaex) {
+						switch (xaex.errorCode) {
+						case XAException.XAER_NOTA:
+							transaction.setTransactionStatus(Status.STATUS_MARKED_ROLLBACK);
+							compensableLogger.updateTransaction(compensable.getTransactionArchive());
+							break;
+						case XAException.XAER_RMERR:
+							logger.warn("The database table 'bytejta' cannot found, the status of the trying branch transaction is unknown!");
+							break;
+						case XAException.XAER_RMFAIL:
+							Xid xid = compensableArchive.getTransactionXid();
+							logger.error("Error occurred while recovering the branch transaction service: {}",
+									ByteUtils.byteArrayToString(xid.getGlobalTransactionId()), xaex);
+							break;
+						default:
+							logger.error("Illegal state, the status of the trying branch transaction is unknown!");
+						}
+					}
+				} else {
+					logger.error("Illegal resources, the status of the trying branch transaction is unknown!");
+				}
+			}
+		} else {
+			switch (transaction.getTransactionStatus()) {
+			case Status.STATUS_ACTIVE:
+			case Status.STATUS_MARKED_ROLLBACK:
+			case Status.STATUS_PREPARING:
+			case Status.STATUS_ROLLING_BACK:
+			case Status.STATUS_UNKNOWN:
+				transaction.setTransactionStatus(Status.STATUS_COMMITTING); // TODO
+				compensableLogger.updateTransaction(compensable.getTransactionArchive());
+				break;
+			case Status.STATUS_PREPARED:
+			case Status.STATUS_COMMITTING:
+			case Status.STATUS_COMMITTED:
+			case Status.STATUS_ROLLEDBACK:
+			default:
+				// ignore
+			}
+		}
 	}
 
 	public void timingRecover() {
@@ -164,7 +241,7 @@ public class TransactionRecoveryImpl
 			TransactionXid xid = transactionContext.getXid();
 			try {
 				this.recoverTransaction(transaction);
-				transaction.recoveryForgetQuietly();
+				transaction.recoveryForget();
 			} catch (CommitRequiredException ex) {
 				logger.debug("[{}] recover: branch={}, message= commit-required",
 						ByteUtils.byteArrayToString(xid.getGlobalTransactionId()),
@@ -190,11 +267,11 @@ public class TransactionRecoveryImpl
 		logger.info("[transaction-recovery] total= {}, success= {}", total, value);
 	}
 
-	public synchronized void recoverTransaction(Transaction transaction)
-			throws CommitRequiredException, RollbackRequiredException, SystemException {
-
+	public synchronized void recoverTransaction(Transaction transaction) throws CommitRequiredException,
+			RollbackRequiredException, SystemException {
 		CompensableManager compensableManager = this.beanFactory.getCompensableManager();
 		TransactionContext transactionContext = transaction.getTransactionContext();
+
 		if (transactionContext.isCoordinator()) {
 			try {
 				compensableManager.associateThread(transaction);
@@ -206,8 +283,8 @@ public class TransactionRecoveryImpl
 
 	}
 
-	public synchronized void recoverCoordinator(Transaction transaction)
-			throws CommitRequiredException, RollbackRequiredException, SystemException {
+	public synchronized void recoverCoordinator(Transaction transaction) throws CommitRequiredException,
+			RollbackRequiredException, SystemException {
 
 		switch (transaction.getTransactionStatus()) {
 		case Status.STATUS_ACTIVE:

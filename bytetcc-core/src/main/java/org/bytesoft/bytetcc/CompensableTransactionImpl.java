@@ -26,6 +26,7 @@ import javax.transaction.Synchronization;
 import javax.transaction.SystemException;
 import javax.transaction.xa.XAException;
 import javax.transaction.xa.XAResource;
+import javax.transaction.xa.Xid;
 
 import org.apache.commons.lang3.StringUtils;
 import org.bytesoft.bytejta.supports.jdbc.RecoveredResource;
@@ -55,7 +56,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class CompensableTransactionImpl extends TransactionListenerAdapter implements CompensableTransaction {
-	static final Logger logger = LoggerFactory.getLogger(CompensableTransactionImpl.class.getSimpleName());
+	static final Logger logger = LoggerFactory.getLogger(CompensableTransactionImpl.class);
 
 	private final TransactionContext transactionContext;
 	private final List<CompensableArchive> archiveList = new ArrayList<CompensableArchive>();
@@ -69,8 +70,6 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 	private transient Boolean positive;
 	/* current compense-archive in confirm/cancel phase. */
 	private transient CompensableArchive archive;
-
-	private transient String resourceKey;
 
 	/* current compensable-archive list in try phase, only used by participant. */
 	private final transient List<CompensableArchive> transientArchiveList = new ArrayList<CompensableArchive>();
@@ -93,8 +92,8 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return transactionArchive;
 	}
 
-	public void commit() throws RollbackException, HeuristicMixedException, HeuristicRollbackException, SecurityException,
-			IllegalStateException, SystemException {
+	public synchronized void commit() throws RollbackException, HeuristicMixedException, HeuristicRollbackException,
+			SecurityException, IllegalStateException, SystemException {
 
 		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
 
@@ -107,13 +106,16 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		if (nativeSuccess && remoteSuccess) {
 			this.transactionStatus = Status.STATUS_COMMITTED;
 			compensableLogger.deleteTransaction(this.getTransactionArchive());
+
+			logger.info("{}| compensable transaction committed!",
+					ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()));
 		} else {
 			throw new SystemException();
 		}
 
 	}
 
-	private boolean fireNativeParticipantConfirm() {
+	private synchronized boolean fireNativeParticipantConfirm() {
 		boolean success = true;
 
 		ContainerContext container = this.beanFactory.getContainerContext();
@@ -134,15 +136,16 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 					byte[] globalTransactionId = transactionXid.getGlobalTransactionId();
 					byte[] branchQualifier = current.getTransactionXid().getBranchQualifier();
 					logger.error(
-							"[{}] commit-transaction: error occurred while confirming service: {}, please check whether the params of method(compensable-service) supports serialization.",
-							ByteUtils.byteArrayToString(globalTransactionId), ByteUtils.byteArrayToString(branchQualifier));
+							"{}| error occurred while confirming service: {}, please check whether the params of method(compensable-service) supports serialization.",
+							ByteUtils.byteArrayToString(globalTransactionId),
+							ByteUtils.byteArrayToString(branchQualifier));
 				} else {
 					container.confirm(invocation);
 				}
 			} catch (RuntimeException rex) {
 				success = false;
 
-				logger.error("[{}] commit-transaction: error occurred while confirming service: {}",
+				logger.error("{}| error occurred while confirming service: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			} finally {
 				this.archive = null;
@@ -153,7 +156,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return success;
 	}
 
-	private boolean fireRemoteParticipantConfirm() {
+	private synchronized boolean fireRemoteParticipantConfirm() {
 		boolean success = true;
 
 		for (int i = 0; i < this.resourceList.size(); i++) {
@@ -171,10 +174,10 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				current.setCommitted(true);
 				current.setCompleted(true);
 				transactionLogger.updateCoordinator(current);
-				// transactionLogger.flushImmediately();
-			} catch (XAException ex) {
-				success = false;
 
+				logger.info("{}| confirm remote branch: {}", ByteUtils.byteArrayToString(branchXid
+						.getGlobalTransactionId()), current.getDescriptor().getIdentifier());
+			} catch (XAException ex) {
 				switch (ex.errorCode) {
 				case XAException.XA_HEURCOM:
 					current.setCommitted(true);
@@ -202,15 +205,18 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 					success = false;
 				}
 
-				if (success == false) {
-					logger.error("[{}] commit-transaction: error occurred while confirming branch: {}",
+				if (success) {
+					logger.info("{}| confirm remote branch: {}", ByteUtils.byteArrayToString(branchXid
+							.getGlobalTransactionId()), current.getDescriptor().getIdentifier());
+				} else {
+					logger.error("{}| error occurred while confirming branch: {}",
 							ByteUtils.byteArrayToString(branchXid.getGlobalTransactionId()), this.archive, ex);
 				}
 			} catch (RuntimeException rex) {
 				success = false;
 
 				TransactionXid transactionXid = this.transactionContext.getXid();
-				logger.error("[{}] commit-transaction: error occurred while confirming branch: {}",
+				logger.error("{}| error occurred while confirming branch: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			}
 		}
@@ -227,7 +233,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		throw new SystemException("Not supported!");
 	}
 
-	public void rollback() throws IllegalStateException, SystemException {
+	public synchronized void rollback() throws IllegalStateException, SystemException {
 		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
 
 		this.transactionStatus = Status.STATUS_ROLLING_BACK;
@@ -255,13 +261,16 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 			if (nativeSuccess && remoteSuccess) {
 				this.transactionStatus = Status.STATUS_ROLLEDBACK;
 				compensableLogger.deleteTransaction(this.getTransactionArchive());
+
+				logger.info("{}| compensable transaction rolled back!",
+						ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()));
 			} else {
 				throw new SystemException();
 			}
 		}
 	}
 
-	private boolean fireNativeParticipantCancel() {
+	private synchronized boolean fireNativeParticipantCancel() {
 		boolean success = true;
 
 		ContainerContext container = this.beanFactory.getContainerContext();
@@ -282,15 +291,16 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 					byte[] globalTransactionId = transactionXid.getGlobalTransactionId();
 					byte[] branchQualifier = current.getTransactionXid().getBranchQualifier();
 					logger.error(
-							"[{}] rollback-transaction: error occurred while cancelling service: {}, please check whether the params of method(compensable-service) supports serialization.",
-							ByteUtils.byteArrayToString(globalTransactionId), ByteUtils.byteArrayToString(branchQualifier));
+							"{}| error occurred while cancelling service: {}, please check whether the params of method(compensable-service) supports serialization.",
+							ByteUtils.byteArrayToString(globalTransactionId),
+							ByteUtils.byteArrayToString(branchQualifier));
 				} else {
 					container.cancel(invocation);
 				}
 			} catch (RuntimeException rex) {
 				success = false;
 
-				logger.error("[{}] rollback-transaction: error occurred while cancelling service: {}",
+				logger.error("{}| error occurred while cancelling service: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			} finally {
 				this.archive = null;
@@ -301,7 +311,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return success;
 	}
 
-	private boolean fireRemoteParticipantCancel() {
+	private synchronized boolean fireRemoteParticipantCancel() {
 		boolean success = true;
 
 		for (int i = 0; i < this.resourceList.size(); i++) {
@@ -319,17 +329,19 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				current.setRolledback(true);
 				current.setCompleted(true);
 				transactionLogger.updateCoordinator(current);
-				// transactionLogger.flushImmediately();
+
+				logger.info("{}| cancel remote branch: {}", ByteUtils.byteArrayToString(branchXid
+						.getGlobalTransactionId()), current.getDescriptor().getIdentifier());
 			} catch (XAException ex) {
 				success = false;
 
-				logger.error("[{}] rollback-transaction: error occurred while cancelling branch: {}",
+				logger.error("{}| error occurred while cancelling branch: {}",
 						ByteUtils.byteArrayToString(branchXid.getGlobalTransactionId()), this.archive, ex);
 			} catch (RuntimeException rex) {
 				success = false;
 
 				TransactionXid transactionXid = this.transactionContext.getXid();
-				logger.error("[{}] rollback-transaction: error occurred while cancelling branch: {}",
+				logger.error("{}| error occurred while cancelling branch: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			}
 		}
@@ -360,6 +372,8 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 			resourceArchive.setXid(branchXid);
 			resourceArchive.setDescriptor(descriptor);
 			this.resourceList.add(resourceArchive);
+			logger.info("{}| enlist remote resource: {}.",
+					ByteUtils.byteArrayToString(globalXid.getGlobalTransactionId()), identifier);
 		}
 
 		return true;
@@ -382,7 +396,10 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 	}
 
 	public void registerCompensable(CompensableInvocation invocation) {
+		XidFactory xidFactory = this.beanFactory.getTransactionXidFactory();
+
 		CompensableArchive archive = new CompensableArchive();
+		archive.setIdentifier(xidFactory.createGlobalXid());
 
 		archive.setCompensable(invocation);
 
@@ -397,7 +414,8 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 
 	}
 
-	public void registerSynchronization(Synchronization sync) throws RollbackException, IllegalStateException, SystemException {
+	public void registerSynchronization(Synchronization sync) throws RollbackException, IllegalStateException,
+			SystemException {
 	}
 
 	public void registerTransactionListener(TransactionListener listener) {
@@ -406,21 +424,35 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 	public void registerTransactionResourceListener(TransactionResourceListener listener) {
 	}
 
-	public void onCommitStart(TransactionXid xid) {
+	public void onEnlistResource(Xid xid, XAResource xares) {
+	}
+
+	public void onDelistResource(Xid xid, XAResource xares) {
+		String resourceKey = null;
+		if (XAResourceDescriptor.class.isInstance(xares)) {
+			XAResourceDescriptor descriptor = (XAResourceDescriptor) xares;
+			resourceKey = descriptor.getIdentifier();
+		} else if (XAResourceArchive.class.isInstance(xares)) {
+			XAResourceArchive resourceArchive = (XAResourceArchive) xares;
+			XAResourceDescriptor descriptor = resourceArchive.getDescriptor();
+			resourceKey = descriptor == null ? null : descriptor.getIdentifier();
+		}
+
 		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
-		XidFactory xidFactory = this.beanFactory.getTransactionXidFactory();
+		// XidFactory xidFactory = this.beanFactory.getTransactionXidFactory();
 
 		if (this.transactionContext.isCompensating()) {
-			this.archive.setCompensableResourceKey(this.resourceKey);
+			this.archive.setCompensableXid(xid);
+			this.archive.setCompensableResourceKey(resourceKey);
 			compensableLogger.updateCompensable(this.archive);
 		} else if (this.transactionContext.isCoordinator()) {
 			for (int i = 0; i < this.archiveList.size(); i++) {
 				CompensableArchive compensableArchive = this.archiveList.get(i);
 				compensableArchive.setTransactionXid(xid);
-				compensableArchive.setTransactionResourceKey(this.resourceKey);
+				compensableArchive.setTransactionResourceKey(resourceKey);
 
-				TransactionXid compensableXid = xidFactory.createGlobalXid();
-				compensableArchive.setCompensableXid(compensableXid);
+				// TransactionXid compensableXid = xidFactory.createGlobalXid();
+				// compensableArchive.setCompensableXid(compensableXid);
 
 				compensableLogger.createCompensable(compensableArchive);
 			}
@@ -428,10 +460,10 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 			for (int i = 0; i < this.transientArchiveList.size(); i++) {
 				CompensableArchive compensableArchive = this.transientArchiveList.get(i);
 				compensableArchive.setTransactionXid(xid);
-				compensableArchive.setTransactionResourceKey(this.resourceKey);
+				compensableArchive.setTransactionResourceKey(resourceKey);
 
-				TransactionXid compensableXid = xidFactory.createGlobalXid();
-				compensableArchive.setCompensableXid(compensableXid);
+				// TransactionXid compensableXid = xidFactory.createGlobalXid();
+				// compensableArchive.setCompensableXid(compensableXid);
 
 				compensableLogger.createCompensable(compensableArchive);
 			}
@@ -447,30 +479,53 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				// ignore
 			} else if (this.positive) {
 				this.archive.setConfirmed(true);
+
+				logger.info("{}| confirm: identifier= {}, resourceKey= {}, resourceXid= {}.",
+						ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()),
+						this.archive.getIdentifier(), this.archive.getCompensableResourceKey(),
+						this.archive.getCompensableXid());
 			} else {
 				this.archive.setCancelled(true);
+
+				logger.info("{}| cancel: identifier= {}, resourceKey= {}, resourceXid= {}.",
+						ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()),
+						this.archive.getIdentifier(), this.archive.getCompensableResourceKey(),
+						this.archive.getCompensableXid());
 			}
 			compensableLogger.updateCompensable(this.archive);
-			// compensableLogger.flushImmediately();
 		} else if (this.transactionContext.isCoordinator()) {
 			for (int i = 0; i < this.archiveList.size(); i++) {
 				CompensableArchive compensableArchive = this.archiveList.get(i);
 				compensableArchive.setTried(true);
-				compensableLogger.updateCompensable(compensableArchive);
-				// compensableLogger.flushImmediately();
+				// compensableLogger.updateCompensable(compensableArchive);
+
+				logger.info("{}| try: identifier= {}, resourceKey= {}, resourceXid= {}.",
+						ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()),
+						this.archive.getIdentifier(), this.archive.getTransactionResourceKey(),
+						this.archive.getTransactionXid());
 			}
+			TransactionArchive transactionArchive = this.getTransactionArchive();
+			transactionArchive.setCompensableStatus(Status.STATUS_COMMITTING);
+			compensableLogger.updateTransaction(transactionArchive);
+
+			logger.info("{}| try completed.",
+					ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()));
 		} else {
 			for (int i = 0; i < this.transientArchiveList.size(); i++) {
 				CompensableArchive compensableArchive = this.transientArchiveList.get(i);
 				compensableArchive.setTried(true);
 				compensableLogger.updateCompensable(compensableArchive);
-				// compensableLogger.flushImmediately();
+
+				logger.info("{}| try: identifier= {}, resourceKey= {}, resourceXid= {}.",
+						ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()),
+						compensableArchive.getIdentifier(), compensableArchive.getTransactionResourceKey(),
+						compensableArchive.getTransactionXid());
 			}
 		}
 
 	}
 
-	public void recoveryCommit() throws CommitRequiredException, SystemException {
+	public synchronized void recoveryCommit() throws CommitRequiredException, SystemException {
 		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
 
 		this.transactionContext.setCompensating(true);
@@ -482,13 +537,16 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		if (nativeSuccess && remoteSuccess) {
 			this.transactionStatus = Status.STATUS_COMMITTED;
 			compensableLogger.deleteTransaction(this.getTransactionArchive());
+
+			logger.info("{}| compensable transaction recovery committed!",
+					ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()));
 		} else {
 			throw new SystemException();
 		}
 
 	}
 
-	private boolean fireNativeParticipantRecoveryConfirm() {
+	private synchronized boolean fireNativeParticipantRecoveryConfirm() {
 		boolean success = true;
 
 		ContainerContext container = this.beanFactory.getContainerContext();
@@ -512,8 +570,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				String identifier = current.getCompensableResourceKey();
 				if (StringUtils.isBlank(identifier)) {
 					if (previouConfirmed) {
-						logger.warn(
-								"There is no valid resource participated in the current branch transaction, the status of the current branch transaction is unknown!");
+						logger.warn("There is no valid resource participated in the current branch transaction, the status of the current branch transaction is unknown!");
 					} else {
 						logger.debug("There is no valid resource participated in the current branch transaction!");
 					}
@@ -524,16 +581,21 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 						try {
 							resource.recoverable(compensableXid);
 							current.setConfirmed(true);
-							compensableLogger.updateCompensable(this.archive);
-							// compensableLogger.flushImmediately();
+							compensableLogger.updateCompensable(current);
 							continue;
 						} catch (XAException xaex) {
 							switch (xaex.errorCode) {
 							case XAException.XAER_NOTA:
 								break;
 							case XAException.XAER_RMERR:
-								logger.warn(
-										"The database table 'bytejta' cannot found, the status of the current branch transaction is unknown!");
+								logger.warn("The database table 'bytejta' cannot found, the status of the current branch transaction is unknown!");
+								break;
+							case XAException.XAER_RMFAIL:
+								success = false;
+
+								Xid xid = current.getTransactionXid();
+								logger.error("Error occurred while recovering the branch transaction service: {}",
+										ByteUtils.byteArrayToString(xid.getGlobalTransactionId()), xaex);
 								break;
 							default:
 								logger.error("Illegal state, the status of the current branch transaction is unknown!");
@@ -557,13 +619,13 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				byte[] globalTransactionId = transactionXid.getGlobalTransactionId();
 				byte[] branchQualifier = compensableXid.getBranchQualifier();
 				logger.error(
-						"[{}] recover-transaction: error occurred while confirming service: {}, please check whether the params of method(compensable-service) supports serialization.",
+						"{}| error occurred while confirming service: {}, please check whether the params of method(compensable-service) supports serialization.",
 						ByteUtils.byteArrayToString(globalTransactionId), ByteUtils.byteArrayToString(branchQualifier));
 			} catch (RuntimeException rex) {
 				success = false;
 
 				TransactionXid transactionXid = this.transactionContext.getXid();
-				logger.error("[{}] recover-transaction: error occurred while confirming service: {}",
+				logger.error("{}| error occurred while confirming service: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			} finally {
 				this.archive = null;
@@ -577,7 +639,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return success;
 	}
 
-	private boolean fireRemoteParticipantRecoveryConfirm() {
+	private synchronized boolean fireRemoteParticipantRecoveryConfirm() {
 		boolean success = true;
 
 		for (int i = 0; i < this.resourceList.size(); i++) {
@@ -595,7 +657,9 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				current.setCommitted(true);
 				current.setCompleted(true);
 				transactionLogger.updateCoordinator(current);
-				// transactionLogger.flushImmediately();
+
+				logger.info("{}| recovery-confirm remote branch: {}", ByteUtils.byteArrayToString(branchXid
+						.getGlobalTransactionId()), current.getDescriptor().getIdentifier());
 			} catch (XAException ex) {
 				switch (ex.errorCode) {
 				case XAException.XA_HEURCOM:
@@ -623,15 +687,18 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 					success = false;
 				}
 
-				if (success == false) {
-					logger.error("[{}] recover-transaction: error occurred while confirming branch: {}",
+				if (success) {
+					logger.info("{}| recovery-confirm remote branch: {}", ByteUtils.byteArrayToString(branchXid
+							.getGlobalTransactionId()), current.getDescriptor().getIdentifier());
+				} else {
+					logger.error("{}| error occurred while confirming branch: {}",
 							ByteUtils.byteArrayToString(branchXid.getGlobalTransactionId()), this.archive, ex);
 				}
 			} catch (RuntimeException rex) {
 				success = false;
 
 				TransactionXid transactionXid = this.transactionContext.getXid();
-				logger.error("[{}] recover-transaction: error occurred while confirming branch: {}",
+				logger.error("{}| error occurred while confirming branch: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			}
 		}
@@ -639,7 +706,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return success;
 	}
 
-	public void recoveryRollback() throws RollbackRequiredException, SystemException {
+	public synchronized void recoveryRollback() throws RollbackRequiredException, SystemException {
 		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
 
 		this.transactionStatus = Status.STATUS_ROLLING_BACK;
@@ -651,13 +718,16 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		if (nativeSuccess && remoteSuccess) {
 			this.transactionStatus = Status.STATUS_ROLLEDBACK;
 			compensableLogger.deleteTransaction(this.getTransactionArchive());
+
+			logger.info("{}| compensable transaction recovery rolled back!",
+					ByteUtils.byteArrayToString(transactionContext.getXid().getGlobalTransactionId()));
 		} else {
 			throw new SystemException();
 		}
 
 	}
 
-	private boolean fireNativeParticipantRecoveryCancel() {
+	private synchronized boolean fireNativeParticipantRecoveryCancel() {
 		boolean success = true;
 
 		ContainerContext container = this.beanFactory.getContainerContext();
@@ -673,6 +743,43 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				continue;
 			}
 
+			if (current.isTried() == false) /* this.transactionContext.isCoordinator() == false && */{
+				String identifier = current.getTransactionResourceKey();
+				if (StringUtils.isBlank(identifier)) {
+					logger.warn("There is no valid resource participated in the trying branch transaction, the status of the branch transaction is unknown!");
+				} else {
+					XAResource xares = resourceDeserializer.deserialize(identifier);
+					if (RecoveredResource.class.isInstance(xares)) {
+						RecoveredResource resource = (RecoveredResource) xares;
+						try {
+							resource.recoverable(current.getTransactionXid());
+							current.setTried(true);
+							compensableLogger.updateCompensable(current);
+						} catch (XAException xaex) {
+							switch (xaex.errorCode) {
+							case XAException.XAER_NOTA:
+								current.setTried(false);
+								continue;
+							case XAException.XAER_RMERR:
+								logger.warn("The database table 'bytejta' cannot found, the status of the trying branch transaction is unknown!");
+								break;
+							case XAException.XAER_RMFAIL:
+								success = false;
+
+								Xid xid = current.getTransactionXid();
+								logger.error("Error occurred while recovering the branch transaction service: {}",
+										ByteUtils.byteArrayToString(xid.getGlobalTransactionId()), xaex);
+								break;
+							default:
+								logger.error("Illegal state, the status of the trying branch transaction is unknown!");
+							}
+						}
+					} else {
+						logger.error("Illegal resources, the status of the trying branch transaction is unknown!");
+					}
+				}
+			}
+
 			TransactionXid compensableXid = (TransactionXid) current.getCompensableXid();
 			TransactionXid transactionXid = this.transactionContext.getXid();
 			try {
@@ -682,8 +789,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				String identifier = current.getCompensableResourceKey();
 				if (StringUtils.isBlank(identifier)) {
 					if (previouCancelled) {
-						logger.warn(
-								"There is no valid resource participated in the current branch transaction, the status of the current branch transaction is unknown!");
+						logger.warn("There is no valid resource participated in the current branch transaction, the status of the current branch transaction is unknown!");
 					} else {
 						logger.debug("There is no valid resource participated in the current branch transaction!");
 					}
@@ -694,16 +800,21 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 						try {
 							resource.recoverable(compensableXid);
 							current.setCancelled(true);
-							compensableLogger.updateCompensable(this.archive);
-							// compensableLogger.flushImmediately();
+							compensableLogger.updateCompensable(current);
 							continue;
 						} catch (XAException xaex) {
 							switch (xaex.errorCode) {
 							case XAException.XAER_NOTA:
 								break;
 							case XAException.XAER_RMERR:
-								logger.warn(
-										"The database table 'bytejta' cannot found, the status of the current branch transaction is unknown!");
+								logger.warn("The database table 'bytejta' cannot found, the status of the current branch transaction is unknown!");
+								break;
+							case XAException.XAER_RMFAIL:
+								success = false;
+
+								Xid xid = current.getTransactionXid();
+								logger.error("Error occurred while recovering the branch transaction service: {}",
+										ByteUtils.byteArrayToString(xid.getGlobalTransactionId()), xaex);
 								break;
 							default:
 								logger.error("Illegal state, the status of the current branch transaction is unknown!");
@@ -726,12 +837,12 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				byte[] globalTransactionId = transactionXid.getGlobalTransactionId();
 				byte[] branchQualifier = current.getTransactionXid().getBranchQualifier();
 				logger.error(
-						"[{}] rollback-transaction: error occurred while cancelling service: {}, please check whether the params of method(compensable-service) supports serialization.",
+						"{}| error occurred while cancelling service: {}, please check whether the params of method(compensable-service) supports serialization.",
 						ByteUtils.byteArrayToString(globalTransactionId), ByteUtils.byteArrayToString(branchQualifier));
 			} catch (RuntimeException rex) {
 				success = false;
 
-				logger.error("[{}] rollback-transaction: error occurred while cancelling service: {}",
+				logger.error("{}| error occurred while cancelling service: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			} finally {
 				this.archive = null;
@@ -744,7 +855,7 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return success;
 	}
 
-	private boolean fireRemoteParticipantRecoveryCancel() {
+	private synchronized boolean fireRemoteParticipantRecoveryCancel() {
 		boolean success = true;
 
 		for (int i = 0; i < this.resourceList.size(); i++) {
@@ -762,17 +873,19 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 				current.setRolledback(true);
 				current.setCompleted(true);
 				transactionLogger.updateCoordinator(current);
-				// transactionLogger.flushImmediately();
+
+				logger.info("{}| recovery-cancel remote branch: {}", ByteUtils.byteArrayToString(branchXid
+						.getGlobalTransactionId()), current.getDescriptor().getIdentifier());
 			} catch (XAException ex) {
 				success = false;
 
-				logger.error("[{}] rollback-transaction: error occurred while cancelling branch: {}",
+				logger.error("{}| error occurred while cancelling branch: {}",
 						ByteUtils.byteArrayToString(branchXid.getGlobalTransactionId()), this.archive, ex);
 			} catch (RuntimeException rex) {
 				success = false;
 
 				TransactionXid transactionXid = this.transactionContext.getXid();
-				logger.error("[{}] rollback-transaction: error occurred while cancelling branch: {}",
+				logger.error("{}| error occurred while cancelling branch: {}",
 						ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), this.archive, rex);
 			}
 		}
@@ -780,23 +893,90 @@ public class CompensableTransactionImpl extends TransactionListenerAdapter imple
 		return success;
 	}
 
-	public void recoveryForgetQuietly() {
-		// TODO Auto-generated method stub
+	public synchronized void recoveryForget() throws SystemException {
+		XAResourceDeserializer resourceDeserializer = this.beanFactory.getResourceDeserializer();
+		boolean success = true;
 
-	}
+		for (int i = 0; i < this.archiveList.size(); i++) {
+			CompensableArchive current = this.archiveList.get(i);
 
-	public void onEnlistResource(XAResource xares) {
-		if (XAResourceDescriptor.class.isInstance(xares)) {
-			XAResourceDescriptor descriptor = (XAResourceDescriptor) xares;
-			this.resourceKey = descriptor.getIdentifier();
-		} else if (XAResourceArchive.class.isInstance(xares)) {
-			XAResourceArchive resourceArchive = (XAResourceArchive) xares;
-			XAResourceDescriptor descriptor = resourceArchive.getDescriptor();
-			this.resourceKey = descriptor == null ? null : descriptor.getIdentifier();
+			String transactionResourceKey = current.getTransactionResourceKey();
+			String compensableResourceKey = current.getCompensableResourceKey();
+			if (StringUtils.isNotBlank(transactionResourceKey) && i == 0) {
+				XAResource xares = resourceDeserializer.deserialize(transactionResourceKey);
+				if (RecoveredResource.class.isInstance(xares)) {
+					RecoveredResource resource = (RecoveredResource) xares;
+					Xid branchXid = current.getTransactionXid();
+					try {
+						resource.forget(branchXid);
+					} catch (XAException xaex) {
+						switch (xaex.errorCode) {
+						case XAException.XAER_NOTA:
+							break;
+						case XAException.XAER_RMERR:
+						case XAException.XAER_RMFAIL:
+						default:
+							success = false;
+							logger.error("forget-transaction: error occurred while forgetting branch: {}", branchXid,
+									xaex);
+						}
+					}
+				}
+			}
+
+			if (StringUtils.isNotBlank(compensableResourceKey)) {
+				XAResource xares = resourceDeserializer.deserialize(compensableResourceKey);
+				if (RecoveredResource.class.isInstance(xares)) {
+					RecoveredResource resource = (RecoveredResource) xares;
+					Xid branchXid = current.getCompensableXid();
+					try {
+						resource.forget(branchXid);
+					} catch (XAException xaex) {
+						switch (xaex.errorCode) {
+						case XAException.XAER_NOTA:
+							break;
+						case XAException.XAER_RMERR:
+						case XAException.XAER_RMFAIL:
+						default:
+							success = false;
+							logger.error("forget-transaction: error occurred while forgetting branch: {}", branchXid,
+									xaex);
+						}
+					}
+				}
+			}
+
 		}
-	}
 
-	public void onDelistResource(XAResource xares) {
+		for (int i = 0; i < this.resourceList.size(); i++) {
+			XAResourceArchive current = this.resourceList.get(i);
+
+			XidFactory xidFactory = this.beanFactory.getCompensableXidFactory();
+			TransactionXid branchXid = (TransactionXid) current.getXid();
+			TransactionXid globalXid = xidFactory.createGlobalXid(branchXid.getGlobalTransactionId());
+			try {
+				current.forget(globalXid);
+			} catch (XAException ex) {
+				switch (ex.errorCode) {
+				case XAException.XAER_NOTA:
+					break;
+				default:
+					success = false;
+					logger.error("forget-transaction: error occurred while forgetting branch: {}", branchXid, ex);
+				}
+			} catch (RuntimeException rex) {
+				success = false;
+				logger.error("forget-transaction: error occurred while forgetting branch: {}", branchXid, rex);
+			}
+		}
+
+		if (success) {
+			logger.info("{}| forget transaction.",
+					ByteUtils.byteArrayToString(this.transactionContext.getXid().getGlobalTransactionId()));
+		} else {
+			throw new SystemException();
+		}
+
 	}
 
 	public CompensableArchive getCompensableArchive() {
