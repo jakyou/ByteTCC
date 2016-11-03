@@ -19,7 +19,9 @@ import java.lang.reflect.Method;
 
 import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
+import org.apache.commons.lang3.StringUtils;
 import org.bytesoft.bytetcc.supports.CompensableInvocationImpl;
+import org.bytesoft.bytetcc.supports.spring.aware.CompensableBeanNameAware;
 import org.bytesoft.compensable.Compensable;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.CompensableInvocationRegistry;
@@ -41,6 +43,33 @@ public class CompensableMethodInterceptor implements MethodInterceptor, Applicat
 	private ApplicationContext applicationContext;
 
 	public Object invoke(MethodInvocation mi) throws Throwable {
+		String identifier = null;
+		Object bean = mi.getThis();
+		if (CompensableBeanNameAware.class.isInstance(bean)) {
+			CompensableBeanNameAware config = (CompensableBeanNameAware) bean;
+			identifier = config.getBeanName();
+			if (StringUtils.isBlank(identifier)) {
+				logger.error("BeanId(class= {}) should not be null!", bean.getClass().getName());
+				throw new IllegalStateException(String.format("BeanId(class= %s) should not be null!", bean.getClass()
+						.getName()));
+			}
+		} else {
+			String[] beanNameArray = this.applicationContext.getBeanNamesForType(bean.getClass());
+			if (beanNameArray.length == 1) {
+				identifier = beanNameArray[0];
+			} else {
+				logger.error("Class {} does not implement interface {}, and there are multiple bean definitions!", bean
+						.getClass().getName(), CompensableBeanNameAware.class.getName());
+				throw new IllegalStateException(String.format(
+						"Class %s does not implement interface %s, and there are multiple bean definitions!", bean
+								.getClass().getName(), CompensableBeanNameAware.class.getName()));
+			}
+		}
+
+		return this.execute(identifier, mi);
+	}
+
+	public Object execute(String identifier, MethodInvocation mi) throws Throwable {
 		CompensableInvocationRegistry registry = CompensableInvocationRegistry.getInstance();
 		Compensable compensable = mi.getMethod().getDeclaringClass().getAnnotation(Compensable.class);
 
@@ -54,13 +83,7 @@ public class CompensableMethodInterceptor implements MethodInterceptor, Applicat
 			invocation.setArgs(mi.getArguments());
 			invocation.setCancellableKey(compensable.cancellableKey());
 			invocation.setConfirmableKey(compensable.confirmableKey());
-			String[] beanNameArray = this.applicationContext.getBeanNamesForType(mi.getThis().getClass());
-			if (beanNameArray.length == 1) {
-				invocation.setIdentifier(beanNameArray[0]);
-			} else {
-				logger.error("Class {} has multiple bean definition!", mi.getThis().getClass().getName());
-				throw new IllegalStateException(); // TODO
-			}
+			invocation.setIdentifier(identifier);
 
 			if (transaction != null) {
 				Transactional transactional = mi.getMethod().getAnnotation(Transactional.class);
