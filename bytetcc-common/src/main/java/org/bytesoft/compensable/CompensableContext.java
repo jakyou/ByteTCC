@@ -13,12 +13,16 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.bytetcc.supports.resource;
+package org.bytesoft.compensable;
 
-import javax.transaction.xa.Xid;
+import java.io.Serializable;
 
-public interface LocalResourceCleaner {
+public interface CompensableContext {
 
-	public void forget(Xid xid, String resourceId) throws RuntimeException;
+	public boolean isCurrentCompensableServiceTried() throws IllegalStateException;
+
+	public Serializable getVariable(String key) throws IllegalStateException;
+
+	public void setVariable(String key, Serializable variable) throws IllegalStateException;
 
 }

@@ -13,12 +13,10 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.bytetcc.supports.resource;
+package org.bytesoft.compensable.aware;
 
-import javax.transaction.xa.Xid;
+public interface CompensableEndpointAware {
+	public static final String ENDPOINT_FIELD_NAME = "endpoint";
 
-public interface LocalResourceCleaner {
-
-	public void forget(Xid xid, String resourceId) throws RuntimeException;
-
+	public void setEndpoint(String identifier);
 }

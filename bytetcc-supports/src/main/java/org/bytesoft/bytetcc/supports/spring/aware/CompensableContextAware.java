@@ -13,12 +13,13 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.bytetcc.supports.resource;
+package org.bytesoft.bytetcc.supports.spring.aware;
 
-import javax.transaction.xa.Xid;
+import org.bytesoft.compensable.CompensableContext;
 
-public interface LocalResourceCleaner {
+public interface CompensableContextAware {
+	public static final String COMPENSABLE_CONTEXT_FIELD_NAME = "compensableContext";
 
-	public void forget(Xid xid, String resourceId) throws RuntimeException;
+	public void setCompensableContext(CompensableContext aware);
 
 }

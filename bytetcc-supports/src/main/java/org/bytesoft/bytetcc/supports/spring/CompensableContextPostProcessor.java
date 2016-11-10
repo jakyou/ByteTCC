@@ -18,25 +18,39 @@ package org.bytesoft.bytetcc.supports.spring;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.bytesoft.bytetcc.supports.spring.aware.CompensableContextAware;
 import org.bytesoft.compensable.CompensableBeanFactory;
+import org.bytesoft.compensable.CompensableContext;
 import org.bytesoft.compensable.aware.CompensableBeanFactoryAware;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.FatalBeanException;
 import org.springframework.beans.MutablePropertyValues;
 import org.springframework.beans.factory.config.BeanDefinition;
-import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.config.RuntimeBeanReference;
 
-public class CompensableBeanFactoryPostProcessor implements BeanFactoryPostProcessor {
-
+public class CompensableContextPostProcessor implements BeanPostProcessor, CompensableBeanFactoryAware {
 	private CompensableBeanFactory beanFactory;
+
+	public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+		if (CompensableContextAware.class.isInstance(bean)) {
+			CompensableContextAware aware = (CompensableContextAware) bean;
+			CompensableContext compensableContext = this.beanFactory.getCompensableContext();
+			aware.setCompensableContext(compensableContext);
+		}
+		return bean;
+	}
+
+	public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+		return bean;
+	}
 
 	public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException {
 		ClassLoader cl = Thread.currentThread().getContextClassLoader();
 
-		String beanFactoryBeanId = null;
-		List<BeanDefinition> beanFactoryAwareBeanIdList = new ArrayList<BeanDefinition>();
+		String targetBeanId = null;
+		List<BeanDefinition> beanDefList = new ArrayList<BeanDefinition>();
 		String[] beanNameArray = beanFactory.getBeanDefinitionNames();
 		for (int i = 0; i < beanNameArray.length; i++) {
 			String beanName = beanNameArray[i];
@@ -50,25 +64,25 @@ public class CompensableBeanFactoryPostProcessor implements BeanFactoryPostProce
 				continue;
 			}
 
-			if (CompensableBeanFactoryAware.class.isAssignableFrom(beanClass)) {
-				beanFactoryAwareBeanIdList.add(beanDef);
+			if (CompensableContextAware.class.isAssignableFrom(beanClass)) {
+				beanDefList.add(beanDef);
 			}
 
-			if (CompensableBeanFactory.class.isAssignableFrom(beanClass)) {
-				if (beanFactoryBeanId == null) {
-					beanFactoryBeanId = beanName;
+			if (CompensableContext.class.isAssignableFrom(beanClass)) {
+				if (targetBeanId == null) {
+					targetBeanId = beanName;
 				} else {
-					throw new FatalBeanException("Duplicated compensable-bean-factory defined.");
+					throw new FatalBeanException("Duplicated compensable-context defined.");
 				}
 			}
 
 		}
 
-		for (int i = 0; beanFactoryBeanId != null && i < beanFactoryAwareBeanIdList.size(); i++) {
-			BeanDefinition beanDef = beanFactoryAwareBeanIdList.get(i);
+		for (int i = 0; targetBeanId != null && i < beanDefList.size(); i++) {
+			BeanDefinition beanDef = beanDefList.get(i);
 			MutablePropertyValues mpv = beanDef.getPropertyValues();
-			RuntimeBeanReference beanRef = new RuntimeBeanReference(beanFactoryBeanId);
-			mpv.addPropertyValue(CompensableBeanFactoryAware.BEAN_FACTORY_FIELD_NAME, beanRef);
+			RuntimeBeanReference beanRef = new RuntimeBeanReference(targetBeanId);
+			mpv.addPropertyValue(CompensableContextAware.COMPENSABLE_CONTEXT_FIELD_NAME, beanRef);
 		}
 
 	}

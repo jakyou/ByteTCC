@@ -21,7 +21,8 @@ import org.bytesoft.transaction.Transaction;
 import org.bytesoft.transaction.supports.TransactionListener;
 import org.bytesoft.transaction.supports.TransactionResourceListener;
 
-public interface CompensableTransaction extends Transaction, TransactionListener, TransactionResourceListener {
+public interface CompensableTransaction
+		extends Transaction, CompensableContext, TransactionListener, TransactionResourceListener {
 
 	public Transaction getTransaction();
 

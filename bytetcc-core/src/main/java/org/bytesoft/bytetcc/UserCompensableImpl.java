@@ -27,7 +27,6 @@ import javax.transaction.RollbackException;
 import javax.transaction.SystemException;
 import javax.transaction.xa.XAException;
 import javax.transaction.xa.XAResource;
-import javax.transaction.xa.Xid;
 
 import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
 import org.bytesoft.compensable.CompensableBeanFactory;
@@ -81,8 +80,8 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 		this.transactionManager.begin();
 	}
 
-	public void commit() throws HeuristicMixedException, HeuristicRollbackException, IllegalStateException,
-			RollbackException, SecurityException, SystemException {
+	public void commit() throws HeuristicMixedException, HeuristicRollbackException, IllegalStateException, RollbackException,
+			SecurityException, SystemException {
 		this.transactionManager.commit();
 	}
 
@@ -97,10 +96,11 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			throw new IllegalStateException();
 		}
 
+		TransactionContext compensableContext = compensable.getTransactionContext();
+		boolean success = false;
 		try {
-			TransactionContext compensableContext = compensable.getTransactionContext();
-			Xid xid = compensableContext.getXid();
-			compensableCoordinator.commit(xid, true);
+			compensableCoordinator.commit(compensableContext.getXid(), true);
+			success = true;
 		} catch (XAException xaex) {
 			switch (xaex.errorCode) {
 			case XAException.XAER_NOTA:
@@ -116,6 +116,22 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			default:
 				throw new SystemException();
 			}
+		} finally {
+			if (success) {
+				try {
+					compensableCoordinator.forget(compensableContext.getXid());
+				} catch (XAException ex) {
+					switch (ex.errorCode) {
+					case XAException.XAER_INVAL:
+						throw new IllegalStateException();
+					case XAException.XAER_NOTA:
+						throw new IllegalStateException();
+					case XAException.XAER_RMERR:
+					default:
+						throw new SystemException();
+					}
+				}
+			} // end-if (success)
 		}
 	}
 
@@ -133,10 +149,11 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			throw new IllegalStateException();
 		}
 
+		TransactionContext compensableContext = compensable.getTransactionContext();
+		boolean success = false;
 		try {
-			TransactionContext compensableContext = compensable.getTransactionContext();
-			Xid xid = compensableContext.getXid();
-			compensableCoordinator.rollback(xid);
+			compensableCoordinator.rollback(compensableContext.getXid());
+			success = true;
 		} catch (XAException xaex) {
 			switch (xaex.errorCode) {
 			case XAException.XAER_NOTA:
@@ -148,22 +165,35 @@ public class UserCompensableImpl implements UserCompensable, Referenceable, Seri
 			default:
 				throw new SystemException();
 			}
+		} finally {
+			if (success) {
+				try {
+					compensableCoordinator.forget(compensableContext.getXid());
+				} catch (XAException ex) {
+					switch (ex.errorCode) {
+					case XAException.XAER_INVAL:
+						throw new IllegalStateException();
+					case XAException.XAER_NOTA:
+						throw new IllegalStateException();
+					case XAException.XAER_RMERR:
+					default:
+						throw new SystemException();
+					}
+				}
+			} // end-if (success)
 		}
 	}
 
 	public int getStatus() throws SystemException {
-		CompensableManager compensableManager = this.beanFactory.getCompensableManager();
-		return compensableManager.getStatus();
+		return this.transactionManager.getStatus();
 	}
 
 	public void setRollbackOnly() throws IllegalStateException, SystemException {
-		CompensableManager compensableManager = this.beanFactory.getCompensableManager();
-		compensableManager.setRollbackOnly();
+		this.transactionManager.setRollbackOnly();
 	}
 
 	public void setTransactionTimeout(int timeout) throws SystemException {
-		CompensableManager compensableManager = this.beanFactory.getCompensableManager();
-		compensableManager.setTransactionTimeout(timeout);
+		this.transactionManager.setTimeoutSeconds(timeout);
 	}
 
 	public Reference getReference() throws NamingException {

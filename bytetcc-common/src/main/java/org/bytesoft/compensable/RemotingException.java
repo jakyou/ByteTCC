@@ -13,12 +13,21 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.bytetcc.supports.resource;
+package org.bytesoft.compensable;
 
-import javax.transaction.xa.Xid;
+public class RemotingException extends RuntimeException {
+	static final long serialVersionUID = 1L;
 
-public interface LocalResourceCleaner {
+	public RemotingException() {
+		super();
+	}
 
-	public void forget(Xid xid, String resourceId) throws RuntimeException;
+	public RemotingException(String message) {
+		super(message);
+	}
+
+	public RemotingException(String message, Throwable cause) {
+		super(message, cause);
+	}
 
 }

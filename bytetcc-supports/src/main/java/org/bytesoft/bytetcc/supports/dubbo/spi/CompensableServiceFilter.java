@@ -31,6 +31,7 @@ import org.bytesoft.bytetcc.supports.dubbo.CompensableBeanRegistry;
 import org.bytesoft.common.utils.ByteUtils;
 import org.bytesoft.compensable.CompensableBeanFactory;
 import org.bytesoft.compensable.CompensableManager;
+import org.bytesoft.compensable.RemotingException;
 import org.bytesoft.transaction.Transaction;
 import org.bytesoft.transaction.TransactionContext;
 import org.bytesoft.transaction.supports.rpc.TransactionInterceptor;
@@ -50,7 +51,7 @@ import com.caucho.hessian.io.HessianOutput;
 public class CompensableServiceFilter implements Filter {
 	static final Logger logger = LoggerFactory.getLogger(CompensableServiceFilter.class);
 
-	public Result invoke(Invoker<?> invoker, Invocation invocation) throws RpcException {
+	public Result invoke(Invoker<?> invoker, Invocation invocation) throws RpcException, RemotingException {
 		if (RpcContext.getContext().isProviderSide()) {
 			return this.providerInvoke(invoker, invocation);
 		} else {
@@ -58,13 +59,10 @@ public class CompensableServiceFilter implements Filter {
 		}
 	}
 
-	public Result providerInvoke(Invoker<?> invoker, Invocation invocation) throws RpcException {
+	public Result providerInvoke(Invoker<?> invoker, Invocation invocation) throws RpcException, RemotingException {
 		RemoteCoordinatorRegistry remoteCoordinatorRegistry = RemoteCoordinatorRegistry.getInstance();
 		CompensableBeanRegistry beanRegistry = CompensableBeanRegistry.getInstance();
-		CompensableBeanFactory beanFactory = beanRegistry.getBeanFactory();
 		RemoteCoordinator consumeCoordinator = beanRegistry.getConsumeCoordinator();
-		TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
-		CompensableManager transactionManager = beanFactory.getCompensableManager();
 
 		URL targetUrl = invoker.getUrl();
 		String targetAddr = targetUrl.getIp();
@@ -94,26 +92,69 @@ public class CompensableServiceFilter implements Filter {
 		TransactionResponseImpl response = new TransactionResponseImpl();
 		response.setSourceTransactionCoordinator(remoteCoordinator);
 		try {
-			// String transactionContextContent = RpcContext.getContext()
-			// .getAttachment(TransactionContext.class.getName());
-			String transactionContextContent = invocation.getAttachment(TransactionContext.class.getName());
-			if (StringUtils.isNotBlank(transactionContextContent)) {
-				byte[] requestByteArray = ByteUtils.stringToByteArray(transactionContextContent);
-				ByteArrayInputStream bais = new ByteArrayInputStream(requestByteArray);
-				HessianInput input = new HessianInput(bais);
+			this.beforeProviderInvoke(invocation, request, response);
+			result = invoker.invoke(invocation);
+		} catch (RemotingException rex) {
+			throw rex;
+		} catch (RuntimeException rex) {
+			logger.error("Error occurred in remote call!", rex);
+			throw new RemotingException(rex.getMessage());
+		} finally {
+			this.afterProviderInvoke(invocation, request, response);
+		}
+		return result;
+	}
+
+	private void beforeProviderInvoke(Invocation invocation, TransactionRequestImpl request,
+			TransactionResponseImpl response) throws RpcException {
+		CompensableBeanRegistry beanRegistry = CompensableBeanRegistry.getInstance();
+		CompensableBeanFactory beanFactory = beanRegistry.getBeanFactory();
+		TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
+
+		RemotingException rpcError = null;
+		// String transactionContextContent = RpcContext.getContext()
+		// .getAttachment(TransactionContext.class.getName());
+		String transactionContextContent = invocation.getAttachment(TransactionContext.class.getName());
+		if (StringUtils.isNotBlank(transactionContextContent)) {
+			byte[] requestByteArray = ByteUtils.stringToByteArray(transactionContextContent);
+			ByteArrayInputStream bais = new ByteArrayInputStream(requestByteArray);
+			HessianInput input = new HessianInput(bais);
+			try {
 				TransactionContext remoteTransactionContext = (TransactionContext) input.readObject();
 				request.setTransactionContext(remoteTransactionContext);
+			} catch (IOException ex) {
+				logger.error("Error occurred in remote call!", ex);
+				rpcError = new RemotingException(ex.getMessage());
 			}
+		}
+
+		try {
 			transactionInterceptor.afterReceiveRequest(request);
+		} catch (RuntimeException rex) {
+			logger.error("Error occurred in remote call!", rex);
+			throw new RemotingException(rex.getMessage());
+		}
 
-			result = invoker.invoke(invocation);
+		if (rpcError != null) {
+			throw rpcError;
+		}
 
-			Transaction transaction = transactionManager.getCompensableTransactionQuietly();
-			TransactionContext nativeTransactionContext = transaction == null ? null : transaction
-					.getTransactionContext();
+	}
 
-			response.setTransactionContext(nativeTransactionContext);
+	private void afterProviderInvoke(Invocation invocation, TransactionRequestImpl request,
+			TransactionResponseImpl response) throws RpcException {
+		CompensableBeanRegistry beanRegistry = CompensableBeanRegistry.getInstance();
+		CompensableBeanFactory beanFactory = beanRegistry.getBeanFactory();
+		TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
+		CompensableManager transactionManager = beanFactory.getCompensableManager();
 
+		String transactionContextContent = invocation.getAttachment(TransactionContext.class.getName());
+
+		Transaction transaction = transactionManager.getCompensableTransactionQuietly();
+		TransactionContext nativeTransactionContext = transaction == null ? null : transaction.getTransactionContext();
+
+		response.setTransactionContext(nativeTransactionContext);
+		try {
 			transactionInterceptor.beforeSendResponse(response);
 			if (StringUtils.isNotBlank(transactionContextContent)) {
 				ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -126,20 +167,18 @@ public class CompensableServiceFilter implements Filter {
 			}
 		} catch (IOException ex) {
 			logger.error("Error occurred in remote call!", ex);
-			throw new RpcException(ex.getMessage());
+			throw new RemotingException(ex.getMessage());
 		} catch (RuntimeException rex) {
 			logger.error("Error occurred in remote call!", rex);
-			throw new RpcException(rex.getMessage());
+			throw new RemotingException(rex.getMessage());
 		}
-		return result;
 	}
 
-	public Result consumerInvoke(Invoker<?> invoker, Invocation invocation) throws RpcException {
+	public Result consumerInvoke(Invoker<?> invoker, Invocation invocation) throws RpcException, RemotingException {
 		RemoteCoordinatorRegistry remoteCoordinatorRegistry = RemoteCoordinatorRegistry.getInstance();
 		CompensableBeanRegistry beanRegistry = CompensableBeanRegistry.getInstance();
 		CompensableBeanFactory beanFactory = beanRegistry.getBeanFactory();
 		RemoteCoordinator consumeCoordinator = beanRegistry.getConsumeCoordinator();
-		TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
 		CompensableManager transactionManager = beanFactory.getCompensableManager();
 		Transaction transaction = transactionManager.getCompensableTransactionQuietly();
 		TransactionContext nativeTransactionContext = transaction == null ? null : transaction.getTransactionContext();
@@ -173,19 +212,51 @@ public class CompensableServiceFilter implements Filter {
 		TransactionResponseImpl response = new TransactionResponseImpl();
 		response.setSourceTransactionCoordinator(remoteCoordinator);
 		try {
-			transactionInterceptor.beforeSendRequest(request);
-			if (request.getTransactionContext() != null) {
-				ByteArrayOutputStream baos = new ByteArrayOutputStream();
-				HessianOutput output = new HessianOutput(baos);
-				output.writeObject(request.getTransactionContext());
-				String transactionContextContent = ByteUtils.byteArrayToString(baos.toByteArray());
-				// RpcContext.getContext().setAttachment(TransactionContext.class.getName(),
-				// transactionContextContent);
-				invocation.getAttachments().put(TransactionContext.class.getName(), transactionContextContent);
-			}
-
+			this.beforeConsumerInvoke(invocation, request, response);
 			result = invoker.invoke(invocation);
+		} catch (RemotingException rex) {
+			throw rex;
+		} catch (RuntimeException rex) {
+			logger.error("Error occurred in remote call!", rex);
+			throw new RemotingException(rex.getMessage());
+		} finally {
+			this.afterConsumerInvoke(invocation, request, response);
+		}
 
+		return result;
+	}
+
+	private void beforeConsumerInvoke(Invocation invocation, TransactionRequestImpl request,
+			TransactionResponseImpl response) throws RpcException {
+		CompensableBeanRegistry beanRegistry = CompensableBeanRegistry.getInstance();
+		CompensableBeanFactory beanFactory = beanRegistry.getBeanFactory();
+		TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
+
+		transactionInterceptor.beforeSendRequest(request);
+		if (request.getTransactionContext() != null) {
+			ByteArrayOutputStream baos = new ByteArrayOutputStream();
+			HessianOutput output = new HessianOutput(baos);
+			try {
+				output.writeObject(request.getTransactionContext());
+			} catch (IOException ex) {
+				logger.error("Error occurred in remote call!", ex);
+				throw new RemotingException(ex.getMessage());
+			}
+			String transactionContextContent = ByteUtils.byteArrayToString(baos.toByteArray());
+			// RpcContext.getContext().setAttachment(TransactionContext.class.getName(),
+			// transactionContextContent);
+			invocation.getAttachments().put(TransactionContext.class.getName(), transactionContextContent);
+		}
+	}
+
+	private void afterConsumerInvoke(Invocation invocation, TransactionRequestImpl request,
+			TransactionResponseImpl response) throws RpcException {
+		CompensableBeanRegistry beanRegistry = CompensableBeanRegistry.getInstance();
+		CompensableBeanFactory beanFactory = beanRegistry.getBeanFactory();
+		TransactionInterceptor transactionInterceptor = beanFactory.getTransactionInterceptor();
+
+		RemotingException rpcError = null;
+		try {
 			if (request.getTransactionContext() != null) {
 				// String transactionContextContent = RpcContext.getContext()
 				// .getAttachment(TransactionContext.class.getName());
@@ -196,14 +267,22 @@ public class CompensableServiceFilter implements Filter {
 				TransactionContext remoteTransactionContext = (TransactionContext) input.readObject();
 				response.setTransactionContext(remoteTransactionContext);
 			}
-			transactionInterceptor.afterReceiveResponse(response);
 		} catch (IOException ex) {
 			logger.error("Error occurred in remote call!", ex);
-			throw new RpcException(ex.getMessage());
+			rpcError = new RemotingException(ex.getMessage());
+		}
+
+		try {
+			transactionInterceptor.afterReceiveResponse(response);
 		} catch (RuntimeException rex) {
 			logger.error("Error occurred in remote call!", rex);
-			throw new RpcException(rex.getMessage());
+			throw new RemotingException(rex.getMessage());
 		}
-		return result;
+
+		if (rpcError != null) {
+			throw rpcError;
+		}
+
 	}
+
 }

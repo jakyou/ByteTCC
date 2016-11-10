@@ -60,4 +60,6 @@ public interface CompensableBeanFactory {
 
 	public LocalResourceCleaner getLocalResourceCleaner();
 
+	public CompensableContext getCompensableContext();
+
 }

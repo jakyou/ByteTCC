@@ -22,7 +22,9 @@ import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.compensable.CompensableInvocation;
 
 public class CompensableArchive {
+
 	private Xid identifier;
+	private boolean coordinator;
 
 	private CompensableInvocation compensable;
 
@@ -36,15 +38,13 @@ public class CompensableArchive {
 	private Xid compensableXid;
 	private boolean confirmed;
 	private boolean cancelled;
-	private boolean coordinator;
 
 	public String toString() {
+		String key = (this.identifier == null || this.identifier.getGlobalTransactionId() == null) ? null
+				: ByteUtils.byteArrayToString(this.identifier.getGlobalTransactionId());
 		return String.format(
-				"[compensable-archive| transactionXid= %s, compensableXid= %s, confirmed= %s, cancelled= %s]",
-				this.transactionXid == null ? null
-						: ByteUtils.byteArrayToString(this.transactionXid.getGlobalTransactionId()),
-				this.compensableXid == null ? null
-						: ByteUtils.byteArrayToString(this.compensableXid.getGlobalTransactionId()),
+				"[compensable-archive| identifier= %s, transactionKey= %s, transactionXid= %s, compensableKey= %s, compensableXid= %s, confirmed= %s, cancelled= %s]",
+				key, this.transactionResourceKey, this.transactionXid, this.compensableResourceKey, this.compensableXid,
 				this.confirmed, this.cancelled);
 	}
 
